@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BusTrack — Driver</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<div class="ambient"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
+<div class="app">
+  <nav class="navbar">
+    <div class="nav-brand"><div class="nav-icon">🚌</div><h2>BusTrack</h2></div>
+    <div class="nav-right">
+      <div class="nav-user"><span class="pulse"></span><span id="uName"></span></div>
+      <button class="btn btn-ghost" onclick="auth.logout()">Logout</button>
+    </div>
+  </nav>
+  <div class="content">
+    <div id="banner" class="trip-banner idle">⏸ No active trip — start your trip to begin live tracking</div>
+    <div class="trip-actions">
+      <button class="btn btn-success" id="btnStart" onclick="startTrip()">▶ Start Trip</button>
+      <button class="btn btn-danger" id="btnEnd" onclick="endTrip()" style="display:none">⏹ End Trip</button>
+    </div>
+    <div class="stats-row">
+      <div class="stat"><div class="s-icon">📏</div><div class="s-val" id="sDist">0.0</div><div class="s-label">Distance KM</div></div>
+      <div class="stat"><div class="s-icon">⚡</div><div class="s-val text-green" id="sSpeed">0</div><div class="s-label">Speed KM/H</div></div>
+      <div class="stat"><div class="s-icon">📡</div><div class="s-val text-blue" id="sPings">0</div><div class="s-label">GPS Pings</div></div>
+      <div class="stat"><div class="s-icon">🎯</div><div class="s-val text-amber" id="sEta">—</div><div class="s-label">ETA to College</div></div>
+    </div>
+    <div class="map-container">
+      <div id="map"></div>
+      <div class="map-hud map-hud-tr">
+        <div class="hud-chip" id="gpsChip"><span class="dot dot-off"></span>GPS Waiting</div>
+      </div>
+      <div class="map-hud map-hud-bl">
+        <div class="hud-chip">🏫 Destination: St. Joseph's College of Engineering</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/auth.js"></script>
+<script>
+const user=auth.guard(['driver']);if(!user)throw 0;
+document.getElementById('uName').textContent=user.username+' · '+( user.assignedBusId||'—');
+const COLLEGE=[12.8694,80.2158];
+const map=L.map('map').setView([12.91,80.23],13);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'© CartoDB © OSM'}).addTo(map);
+const collegeMarker=L.marker(COLLEGE,{icon:L.divIcon({html:'🏫',className:'college-marker',iconSize:[32,32],iconAnchor:[16,16]})}).addTo(map).bindPopup('<b>St. Joseph\'s College of Engineering</b><br>Semmancheri, OMR');
+L.circle(COLLEGE,{radius:200,color:'#3b82f6',fillColor:'#3b82f6',fillOpacity:0.08,weight:1}).addTo(map);
+const busMarker=L.marker([12.91,80.23],{icon:L.divIcon({html:'🚌',className:'bus-marker',iconSize:[30,30],iconAnchor:[15,15]})}).addTo(map);
+const trail=L.polyline([],{color:'#3b82f6',weight:3,opacity:0.5,dashArray:'8,6'}).addTo(map);
+let socket=io({auth:{token:auth.getToken()}});
+let tripActive=false,watchId=null,pingCount=0,totalDist=0,lastPos=null;
+socket.on('connect',()=>console.log('socket ok'));
+socket.on('bus:eta-update',d=>{if(d.etas&&d.etas.length){const last=d.etas[d.etas.length-1];document.getElementById('sEta').textContent=last.etaMinutes==='Arrived'?'✅':last.etaMinutes+'m'}});
+
+async function startTrip(){
+  const btn=document.getElementById('btnStart');btn.disabled=true;btn.innerHTML='<div class="spinner"></div>';
+  try{
+    const pos=await getGPS();const d=await apiPost('/api/trips/start',{lat:pos[0],lng:pos[1]});
+    if(d.error)throw new Error(d.error);
+    tripActive=true;pingCount=0;totalDist=0;lastPos=null;trail.setLatLngs([]);
+    setUI(true);startWatch();
+  }catch(e){alert(e.message);btn.disabled=false;btn.innerHTML='▶ Start Trip'}
+}
+async function endTrip(){
+  const btn=document.getElementById('btnEnd');btn.disabled=true;btn.innerHTML='<div class="spinner"></div>';
+  try{
+    const pos=await getGPS();await apiPost('/api/trips/end',{lat:pos[0],lng:pos[1]});
+    tripActive=false;stopWatch();setUI(false);
+  }catch(e){alert(e.message);btn.disabled=false;btn.innerHTML='⏹ End Trip'}
+}
+function setUI(on){
+  const banner=document.getElementById('banner'),bs=document.getElementById('btnStart'),be=document.getElementById('btnEnd');
+  if(on){banner.className='trip-banner live';banner.innerHTML='<span class="pulse" style="width:10px;height:10px;border-radius:50%;background:var(--neon-green);box-shadow:0 0 10px var(--neon-green);animation:livePulse 1.5s infinite"></span>Trip Active — broadcasting live location';bs.style.display='none';be.style.display='inline-flex';be.disabled=false;be.innerHTML='⏹ End Trip'}
+  else{banner.className='trip-banner idle';banner.innerHTML='⏸ Trip ended';bs.style.display='inline-flex';bs.disabled=false;bs.innerHTML='▶ Start Trip';be.style.display='none';document.getElementById('gpsChip').innerHTML='<span class="dot dot-off"></span>GPS Stopped'}
+}
+function startWatch(){
+  const chip=document.getElementById('gpsChip');
+  if(!navigator.geolocation){chip.innerHTML='<span class="dot dot-off"></span>No GPS';simFallback();return}
+  chip.innerHTML='<span class="dot dot-live"></span>GPS Active';
+  watchId=navigator.geolocation.watchPosition(p=>{
+    const lat=p.coords.latitude,lng=p.coords.longitude,spd=p.coords.speed?(p.coords.speed*3.6):0;
+    onLocation(lat,lng,spd,p.coords.heading||0);
+  },()=>{chip.innerHTML='<span class="dot dot-blue"></span>Simulated GPS';simFallback()},{enableHighAccuracy:true,maximumAge:2000,timeout:5000});
+}
+function stopWatch(){if(watchId){navigator.geolocation.clearWatch(watchId);watchId=null}}
+function onLocation(lat,lng,speed,heading){
+  busMarker.setLatLng([lat,lng]);map.panTo([lat,lng]);trail.addLatLng([lat,lng]);
+  if(lastPos){const d=haversine(lastPos[0],lastPos[1],lat,lng);totalDist+=d}
+  lastPos=[lat,lng];pingCount++;
+  document.getElementById('sDist').textContent=totalDist.toFixed(2);
+  document.getElementById('sSpeed').textContent=speed.toFixed(0);
+  document.getElementById('sPings').textContent=pingCount;
+  if(socket&&tripActive){socket.emit('driver:update-location',{busId:user.assignedBusId,lat,lng,speed:parseFloat(speed.toFixed(1)),heading})}
+}
+function simFallback(){
+  const path=[[12.9614,80.2397],[12.9540,80.2380],[12.9387,80.2327],[12.9200,80.2295],[12.9010,80.2279],[12.8870,80.2240],[12.8740,80.2190],[12.8694,80.2158]];
+  let i=0,sub=0,steps=10;
+  const iv=setInterval(()=>{
+    if(!tripActive){clearInterval(iv);return}
+    if(i>=path.length-1){clearInterval(iv);document.getElementById('sEta').textContent='✅';return}
+    const t=sub/steps;const lat=path[i][0]+(path[i+1][0]-path[i][0])*t;const lng=path[i][1]+(path[i+1][1]-path[i][1])*t;
+    const jLat=lat+(Math.random()-0.5)*0.0002,jLng=lng+(Math.random()-0.5)*0.0002;
+    onLocation(jLat,jLng,25+Math.random()*20,0);
+    sub++;if(sub>=steps){sub=0;i++}
+  },3000);
+}
+function haversine(lat1,lon1,lat2,lon2){const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))}
+function getGPS(){return new Promise(r=>{if(!navigator.geolocation){r([12.9614,80.2397]);return}navigator.geolocation.getCurrentPosition(p=>r([p.coords.latitude,p.coords.longitude]),()=>r([12.9614,80.2397]),{timeout:4000})})}
+
+(async()=>{const d=await apiGet('/api/trips/active');if(d.trips){const my=d.trips.find(t=>t.busId===user.assignedBusId);if(my){tripActive=true;setUI(true);startWatch()}}})();
+</script>
+</body>
+</html>

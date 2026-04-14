@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BusTrack — Student</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<div class="ambient"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
+<div class="app">
+  <nav class="navbar">
+    <div class="nav-brand"><div class="nav-icon">🚌</div><h2>BusTrack</h2></div>
+    <div class="nav-right">
+      <div class="nav-user"><span class="pulse"></span><span id="uName"></span></div>
+      <button class="btn btn-ghost" onclick="auth.logout()">Logout</button>
+    </div>
+  </nav>
+  <div class="content">
+    <div class="stats-row">
+      <div class="stat"><div class="s-icon">🚌</div><div class="s-val text-green" id="sActive">0</div><div class="s-label">Buses Online</div></div>
+      <div class="stat"><div class="s-icon">🛤️</div><div class="s-val text-blue" id="sTrips">0</div><div class="s-label">Active Trips</div></div>
+      <div class="stat"><div class="s-icon">📡</div><div class="s-val" id="sTracking">—</div><div class="s-label">Tracking</div></div>
+    </div>
+    <div class="split">
+      <div>
+        <div class="panel">
+          <div class="panel-header"><h3>🚌 Live Buses</h3></div>
+          <div class="panel-body"><div id="busList" class="bus-list"></div></div>
+        </div>
+        <div class="panel" id="etaPanel" style="display:none;margin-top:14px">
+          <div class="panel-header"><h3>🕐 ETAs</h3></div>
+          <div class="panel-body"><div id="etaList" class="eta-list"></div></div>
+        </div>
+      </div>
+      <div class="map-container">
+        <div id="map"></div>
+        <div class="map-hud map-hud-tr">
+          <div class="hud-chip"><span class="dot dot-live"></span>Live Tracking</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/auth.js"></script>
+<script>
+const user=auth.guard(['student']);if(!user)throw 0;
+document.getElementById('uName').textContent=user.username;
+const COLLEGE=[12.8694,80.2158];
+const map=L.map('map').setView([12.90,80.22],12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'© CartoDB © OSM'}).addTo(map);
+L.marker(COLLEGE,{icon:L.divIcon({html:'🏫',className:'college-marker',iconSize:[32,32],iconAnchor:[16,16]})}).addTo(map).bindPopup('<b>St. Joseph\'s College</b>');
+L.circle(COLLEGE,{radius:200,color:'#3b82f6',fillColor:'#3b82f6',fillOpacity:0.06,weight:1}).addTo(map);
+
+const markers={};let trackId=null,allBuses=[];
+const socket=io({auth:{token:auth.getToken()}});
+socket.on('connect',()=>load());
+socket.on('bus:location-updated',d=>{updateMarker(d.busId,d.lat,d.lng,d.speed);if(d.busId===trackId)map.panTo([d.lat,d.lng]);renderList()});
+socket.on('bus:eta-update',d=>{if(d.busId===trackId&&d.etas)renderETAs(d.etas)});
+socket.on('bus:status-changed',()=>load());
+socket.on('trip:ended',d=>{if(d.busId===trackId)document.getElementById('etaPanel').style.display='none';load()});
+
+async function load(){
+  const[bd,td]=await Promise.all([apiGet('/api/buses'),apiGet('/api/trips/active')]);
+  allBuses=bd.buses||[];
+  document.getElementById('sActive').textContent=allBuses.filter(b=>b.isActive).length;
+  document.getElementById('sTrips').textContent=td.count||0;
+  allBuses.forEach(b=>{if(b.isActive&&b.location&&b.location.coordinates[0]!==0)updateMarker(b.busId,b.location.coordinates[1],b.location.coordinates[0],b.speed)});
+  renderList();
+}
+function updateMarker(id,lat,lng,spd){
+  const b=allBuses.find(x=>x.busId===id);if(b){b._lat=lat;b._lng=lng;b.speed=spd;b.isActive=true}
+  if(!markers[id]){markers[id]=L.marker([lat,lng],{icon:L.divIcon({html:'🚌',className:'bus-marker',iconSize:[30,30],iconAnchor:[15,15]})}).addTo(map)}
+  else markers[id].setLatLng([lat,lng]);
+  markers[id].bindPopup('<b>'+id+'</b><br>'+((spd||0).toFixed?spd.toFixed(0):0)+' km/h');
+}
+function renderList(){
+  document.getElementById('busList').innerHTML=allBuses.map(b=>{
+    const rn=b.routeId?(b.routeId.name||b.routeId.routeId):'—';
+    return`<div class="bus-card ${b.busId===trackId?'tracking':''}" onclick="track('${b.busId}')">
+      <div class="bus-left"><span class="b-icon">${b.isActive?'🚌':'⚫'}</span><div><div class="b-name">${b.name}</div><div class="b-route">${rn}</div></div></div>
+      <div class="bus-right"><div class="b-speed">${b.isActive?(b.speed?.toFixed?b.speed.toFixed(0):0)+' km/h':'—'}</div><div class="b-status ${b.isActive?'online':'offline'}">${b.isActive?'● On Trip':'○ Offline'}</div></div>
+    </div>`}).join('');
+}
+function track(id){
+  if(trackId)socket.emit('passenger:untrack-bus',{busId:trackId});
+  if(trackId===id){trackId=null;document.getElementById('sTracking').textContent='—';document.getElementById('etaPanel').style.display='none';renderList();return}
+  trackId=id;socket.emit('passenger:track-bus',{busId:id});
+  document.getElementById('sTracking').textContent=id;
+  document.getElementById('etaPanel').style.display='block';
+  if(markers[id])map.setView(markers[id].getLatLng(),14);
+  renderList();
+}
+function renderETAs(etas){
+  document.getElementById('etaList').innerHTML=etas.map(e=>`<div class="eta-row"><span class="stop">📍 ${e.stopName}</span><span class="mins">${e.etaMinutes==='Arrived'?'✅ Arrived':e.etaMinutes+' min'}</span></div>`).join('');
+}
+setInterval(load,15000);
+</script>
+</body>
+</html>

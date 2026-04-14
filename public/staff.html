@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BusTrack — Staff</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+<div class="ambient"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
+<div class="app">
+  <nav class="navbar">
+    <div class="nav-brand"><div class="nav-icon">🚌</div><h2>BusTrack Staff</h2></div>
+    <div class="nav-right">
+      <div class="nav-user"><span class="pulse" style="background:var(--neon-purple);box-shadow:0 0 8px var(--neon-purple)"></span><span id="uName"></span></div>
+      <button class="btn btn-ghost" onclick="auth.logout()">Logout</button>
+    </div>
+  </nav>
+  <div class="content">
+    <div class="stats-row">
+      <div class="stat"><div class="s-icon">🚌</div><div class="s-val" id="sTotal">0</div><div class="s-label">Total Fleet</div></div>
+      <div class="stat"><div class="s-icon">🟢</div><div class="s-val text-green" id="sOnline">0</div><div class="s-label">Buses Online</div></div>
+      <div class="stat"><div class="s-icon">🛤️</div><div class="s-val text-blue" id="sTrips">0</div><div class="s-label">Active Trips</div></div>
+      <div class="stat"><div class="s-icon">🚨</div><div class="s-val text-red" id="sAlerts">0</div><div class="s-label">Alerts</div></div>
+    </div>
+    <div class="split">
+      <div>
+        <div class="panel">
+          <div class="panel-header"><h3>🟢 Active Buses</h3></div>
+          <div class="panel-body"><div id="busList" class="bus-list"></div></div>
+        </div>
+        <div class="panel" style="margin-top:14px">
+          <div class="panel-header"><h3>🚨 Live Alerts</h3></div>
+          <div class="panel-body"><div id="alertFeed" class="alert-feed"></div></div>
+        </div>
+      </div>
+      <div class="map-container">
+        <div id="map" style="height:calc(100vh - 200px)"></div>
+        <div class="map-hud map-hud-tr">
+          <div class="hud-chip"><span class="dot dot-live"></span><span id="liveCount">0</span> buses live</div>
+        </div>
+        <div class="map-hud map-hud-bl">
+          <div class="hud-chip">🏫 St. Joseph's College of Engineering</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/auth.js"></script>
+<script>
+const user=auth.guard(['staff']);if(!user)throw 0;
+document.getElementById('uName').textContent=user.username;
+const COLLEGE=[12.8694,80.2158];
+const map=L.map('map').setView([12.90,80.22],12);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'© CartoDB © OSM'}).addTo(map);
+L.marker(COLLEGE,{icon:L.divIcon({html:'🏫',className:'college-marker',iconSize:[32,32],iconAnchor:[16,16]})}).addTo(map).bindPopup('<b>St. Joseph\'s College</b><br>Semmancheri, OMR');
+L.circle(COLLEGE,{radius:200,color:'#8b5cf6',fillColor:'#8b5cf6',fillOpacity:0.06,weight:1}).addTo(map);
+
+const markers={},trails={};let allBuses=[];
+const socket=io({auth:{token:auth.getToken()}});
+socket.on('connect',()=>load());
+socket.on('bus:location-updated',d=>{
+  updateMarker(d.busId,d.lat,d.lng,d.speed);
+  if(!trails[d.busId])trails[d.busId]=L.polyline([],{color:'#3b82f6',weight:2,opacity:0.3}).addTo(map);
+  trails[d.busId].addLatLng([d.lat,d.lng]);
+});
+socket.on('alert:new',a=>{
+  const feed=document.getElementById('alertFeed');
+  feed.insertAdjacentHTML('afterbegin',alertRow(a));
+  if(feed.children.length>30)feed.lastChild.remove();
+  const c=document.getElementById('sAlerts');c.textContent=parseInt(c.textContent)+1;
+});
+socket.on('bus:status-changed',()=>load());
+
+async function load(){
+  const[bd,td,ad]=await Promise.all([apiGet('/api/buses'),apiGet('/api/trips/active'),apiGet('/api/alerts')]);
+  allBuses=bd.buses||[];const trips=td.trips||[];const alerts=ad.alerts||[];
+  const online=allBuses.filter(b=>b.isActive);
+  document.getElementById('sTotal').textContent=allBuses.length;
+  document.getElementById('sOnline').textContent=online.length;
+  document.getElementById('sTrips').textContent=trips.length;
+  document.getElementById('sAlerts').textContent=alerts.length;
+  document.getElementById('liveCount').textContent=online.length;
+  online.forEach(b=>{
+    if(b.location&&b.location.coordinates[0]!==0){
+      updateMarker(b.busId,b.location.coordinates[1],b.location.coordinates[0],b.speed);
+      socket.emit('passenger:track-bus',{busId:b.busId});
+    }
+  });
+  renderBusList(trips);
+  document.getElementById('alertFeed').innerHTML=alerts.slice(0,20).map(alertRow).join('');
+}
+function updateMarker(id,lat,lng,spd){
+  if(!markers[id]){markers[id]=L.marker([lat,lng],{icon:L.divIcon({html:'🚌',className:'bus-marker',iconSize:[30,30],iconAnchor:[15,15]})}).addTo(map)}
+  else markers[id].setLatLng([lat,lng]);
+  const b=allBuses.find(x=>x.busId===id);
+  markers[id].bindPopup(`<b>${b?b.name:id}</b><br>${id}<br>Speed: ${(spd||0).toFixed?spd.toFixed(0):0} km/h`);
+}
+function renderBusList(trips){
+  const el=document.getElementById('busList');
+  const active=allBuses.filter(b=>b.isActive);
+  if(!active.length){el.innerHTML='<p style="color:var(--text-muted);padding:8px">No buses online</p>';return}
+  el.innerHTML=active.map(b=>{
+    const trip=trips.find(t=>t.busId===b.busId);
+    const rn=b.routeId?(b.routeId.name||''):'';
+    return`<div class="bus-card" onclick="map.setView(markers['${b.busId}']?.getLatLng()||[12.9,80.22],14)">
+      <div class="bus-left"><span class="b-icon">🚌</span><div><div class="b-name">${b.name} <span style="color:var(--text-muted);font-weight:400;font-size:11px">${b.busId}</span></div><div class="b-route">${rn}</div></div></div>
+      <div class="bus-right"><div class="b-speed">${(b.speed||0).toFixed?b.speed.toFixed(0):0} km/h</div><div class="b-status online">${trip?trip.totalDistanceKm.toFixed(1)+' km · '+trip.driverUsername:'● Online'}</div></div>
+    </div>`}).join('');
+}
+function alertRow(a){
+  const cls=a.type.includes('speed')?'tag-speed':a.type.includes('geofence')?'tag-geofence':'tag-deviation';
+  return`<div class="alert-row"><span class="alert-tag ${cls}">${a.type.replace('_',' ')}</span><span class="alert-msg">${a.message}</span><span class="alert-time">${timeAgo(a.timestamp)}</span></div>`;
+}
+setInterval(load,20000);
+</script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BusTrack — Sign In</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="ambient"><div class="orb orb-1"></div><div class="orb orb-2"></div></div>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-icon">🚌</div>
+      <h1>BusTrack</h1>
+    </div>
+    <p class="tagline">St. Joseph's College of Engineering<br>Real-time campus bus tracking system</p>
+    <div id="err" class="form-error"></div>
+    <form id="loginForm">
+      <div class="form-group">
+        <label>Username</label>
+        <input class="form-input" type="text" id="user" placeholder="driver1, student1, staff1" required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input class="form-input" type="password" id="pass" placeholder="••••••••" required>
+      </div>
+      <button type="submit" class="btn btn-primary" id="loginBtn">Sign In</button>
+    </form>
+    <div class="demo-creds">
+      <strong>Demo Accounts</strong><br>
+      driver1 / driver123 · student1 / student123 · staff1 / staff123
+    </div>
+  </div>
+</div>
+<script src="/js/auth.js"></script>
+<script>
+const u=auth.getUser();if(u&&auth.getToken())location.href='/'+u.role+'.html';
+document.getElementById('loginForm').onsubmit=async e=>{
+  e.preventDefault();
+  const btn=document.getElementById('loginBtn'),errEl=document.getElementById('err');
+  const username=document.getElementById('user').value.trim().toLowerCase();
+  const password=document.getElementById('pass').value;
+  errEl.style.display='none';btn.innerHTML='<div class="spinner"></div>';btn.disabled=true;
+  try{
+    const r=await fetch(API+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
+    const d=await r.json();if(!r.ok||!d.token)throw new Error(d.error||'Login failed');
+    auth.save(d.token,d.user);location.href='/'+d.user.role+'.html';
+  }catch(e){errEl.textContent=e.message;errEl.style.display='block';btn.innerHTML='Sign In';btn.disabled=false}
+};
+</script>
+</body>
+</html>
