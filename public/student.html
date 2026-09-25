@@ -95,7 +95,7 @@ function track(id){
   renderList();
 }
 function renderETAs(etas){
-  document.getElementById('etaList').innerHTML=etas.map(e=>`<div class="eta-row"><span class="stop">📍 ${e.stopName}</span><span class="mins">${e.etaMinutes==='Arrived'?'✅ Arrived':e.etaMinutes+' min'}</span></div>`).join('');
+  document.getElementById('etaList').innerHTML=etas.map(e=>`<div class="eta-row"><span class="stop">📍 ${e.stop}</span><span class="mins">${e.etaMinutes==='Arrived'?'✅ Arrived':e.etaMinutes+' min'}</span></div>`).join('');
 }
 setInterval(load,15000);
 </script>
